@@ -1,0 +1,93 @@
+---
+title: "Exploratory analysis of ADL metabolomics"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: 80
+---
+
+The purpose of this notebook is to explore the metabolomics from the study
+below: BACKGROUND: Crossover studies can induce order effects, especially when
+they lack a wash-22 out period.23 OBJECTIVE: We aimed to explore diet order
+effects on energy balance and food intake24 between randomized diet order groups
+in two inpatient crossover studies originally designed to25 compare within
+subject differences in ad libitum energy intake between either minimally26
+processed low carbohydrate (LC) versus low fat (LF) diets or macronutrient
+matched diets27 composed of mostly minimally processed food (MPF) or
+ultra-processed food (UPF).
+
+Starting with the URINE 24h from the
+
+```{r setup}
+rm(list = ls()) #clear workspace
+knitr::opts_knit$set(root.dir = normalizePath(".."))#Set root
+```
+
+```{r Load external libraries}
+#### Loading libraries and data ####
+#read in libraries
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+if (!requireNamespace("ggplot2", quietly = TRUE))  BiocManager::install("ggplot2")
+library("ggplot2")
+if (!requireNamespace("readxl", quietly = TRUE))  BiocManager::install("readxl")
+library("readxl")
+if (!requireNamespace("data.table", quietly = TRUE))  BiocManager::install("data.table")
+library("data.table")
+if (!requireNamespace("tidyverse", quietly = TRUE))  BiocManager::install("tidyverse")
+library("tidyverse")
+print("Libraries are loaded.")
+```
+
+The metadata contains the processed vs unprocessed info and the order component.
+
+```{r Load and organize metadata}
+#### Read metadata ####
+# taken from https://app.box.com/file/821046049979
+metadata <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NIDDK_linking_LEO_CLEANED_6-11-21.xlsx"),
+                                                    sheet = 1)
+print(paste("original metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
+metadata <- metadata[metadata$Sample_matrix == "24h Urine",]
+print(paste("24h urine metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
+metadata <- na.omit(metadata)
+print(paste("metadata no NA nrow/ncol:", paste(dim(metadata), collapse = "/")))
+```
+The metadata starts with 294 rows, but some of those are either full of NA values or not 24h urine samples. After removing these, there are only 80 rows.
+
+Next read in the metabolomics data.
+```{r read and organize metabolomics}
+#Taken from https://app.box.com/folder/132711394563
+initial_table <- data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
+                                   data.table = FALSE)
+print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#### Reorganize and preprocess table ####
+initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled Imp",]
+print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#Remove non-metabolomic columns
+row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
+initial_table <- initial_table[,7:ncol(initial_table)]
+print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#Remove features with more than 80% zeros
+initial_table <- initial_table[,sapply(initial_table, function(x) mean(x == 0) < 0.8)]
+print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#Exclude metabolites that have a CV>30.0
+initial_table <- initial_table[,sapply(initial_table, function(x)  sd(x) / mean(x) < 0.7) ]
+print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+# row_median <- apply(initial_table, 1, median, na.rm=TRUE)
+# col_median <- apply(initial_table, 2, median, na.rm=TRUE)
+# df_median <- median(as.matrix(initial_table))
+# print(paste("row:", row_median, "col:", col_median, "df:", df_median))
+
+#log2 table
+initial_table <- log2(initial_table)
+```
+
+```{r Match metadata and metabolomic data}
+setdiff(metadata$CLIENT_IDENTIFIER, initial_table)
+
+```
+
