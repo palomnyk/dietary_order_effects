@@ -1,6 +1,7 @@
 ---
 title: "Exploratory analysis of ADL metabolomics"
-output: pdf_document
+output: "pdf_document"
+author: "Aaron Yerke (aaronyerke@gmail.com)"
 editor_options: 
   markdown: 
     wrap: 80
@@ -21,6 +22,7 @@ Starting with the URINE 24h from the
 ```{r setup}
 rm(list = ls()) #clear workspace
 knitr::opts_knit$set(root.dir = normalizePath(".."))#Set root
+knitr::opts_chunk$set(class.source = "Solarized Light")
 ```
 
 ```{r Load external libraries}
@@ -33,8 +35,10 @@ if (!requireNamespace("readxl", quietly = TRUE))  BiocManager::install("readxl")
 library("readxl")
 if (!requireNamespace("data.table", quietly = TRUE))  BiocManager::install("data.table")
 library("data.table")
-if (!requireNamespace("tidyverse", quietly = TRUE))  BiocManager::install("tidyverse")
-library("tidyverse")
+if(!require(nlme)){install.packages("nlme")}
+  library("nlme")
+if (!requireNamespace("dplyr", quietly = TRUE))  BiocManager::install("dplyr")
+library("dplyr")
 print("Libraries are loaded.")
 ```
 
@@ -45,15 +49,43 @@ The metadata contains the processed vs unprocessed info and the order component.
 # taken from https://app.box.com/file/821046049979
 metadata <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NIDDK_linking_LEO_CLEANED_6-11-21.xlsx"),
                                                     sheet = 1)
+
 print(paste("original metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
 metadata <- metadata[metadata$Sample_matrix == "24h Urine",]
 print(paste("24h urine metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
 metadata <- na.omit(metadata)
 print(paste("metadata no NA nrow/ncol:", paste(dim(metadata), collapse = "/")))
 ```
-The metadata starts with 294 rows, but some of those are either full of NA values or not 24h urine samples. After removing these, there are only 80 rows.
+
+```{r Scaling investigation}
+#Taken from https://app.box.com/folder/132711394563
+initial_table <- data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
+                                   data.table = FALSE)
+print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#### Reorganize and preprocess table ####
+initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled",]
+print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+#Remove non-metabolomic columns
+row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
+initial_table <- initial_table[,7:ncol(initial_table)]
+print(paste("rn row rw/col:", paste(dim(initial_table), collapse = "/")))
+
+row_median <- apply(initial_table, 1, median, na.rm=TRUE)
+col_median <- apply(initial_table, 2, median, na.rm=TRUE)
+df_median <- median(as.matrix(initial_table))
+
+print(median(row_median))
+```
+It appears that the scaling is so that the median of the row medians is 1.
+
+
+The metadata starts with 294 rows, but some of those are either full of NA
+values or not 24h urine samples. After removing these, there are only 80 rows.
 
 Next read in the metabolomics data.
+
 ```{r read and organize metabolomics}
 #Taken from https://app.box.com/folder/132711394563
 initial_table <- data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
@@ -64,10 +96,18 @@ print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
 initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled Imp",]
 print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
 
+print(paste("date filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+
+initial_table <- as.data.frame(initial_table)
 #Remove non-metabolomic columns
 row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
 initial_table <- initial_table[,7:ncol(initial_table)]
-print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
+print(paste("rn row rw/col:", paste(dim(initial_table), collapse = "/")))
+
+# row_median <- apply(initial_table, 1, median, na.rm=TRUE)
+# col_median <- apply(initial_table, 2, median, na.rm=TRUE)
+# df_median <- median(as.matrix(initial_table))
+# print(paste("row:", row_median, "col:", col_median, "df:", df_median))
 
 #Remove features with more than 80% zeros
 initial_table <- initial_table[,sapply(initial_table, function(x) mean(x == 0) < 0.8)]
@@ -77,17 +117,176 @@ print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
 initial_table <- initial_table[,sapply(initial_table, function(x)  sd(x) / mean(x) < 0.7) ]
 print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
 
-# row_median <- apply(initial_table, 1, median, na.rm=TRUE)
-# col_median <- apply(initial_table, 2, median, na.rm=TRUE)
-# df_median <- median(as.matrix(initial_table))
-# print(paste("row:", row_median, "col:", col_median, "df:", df_median))
 
 #log2 table
 initial_table <- log2(initial_table)
 ```
 
+Metadata has 80 unique samples whereas metabolomics data has 23. This must be
+rectified.
+
 ```{r Match metadata and metabolomic data}
-setdiff(metadata$CLIENT_IDENTIFIER, initial_table)
+
+meta_intrsct <- intersect(row.names(initial_table), metadata$CLIENT_IDENTIFIER)#intersect metadat/metabolomics
+
+metabolomics <- initial_table[meta_intrsct,]
+
+#order both dataframes the same
+my_metadata <- metadata[match(metadata$CLIENT_IDENTIFIER, row.names(metabolomics)),]
+
+print(paste("metabolomics rw/col:", paste(dim(metabolomics), collapse = "/")))
+identical(my_metadata$CLIENT_IDENTIFIER, row.names(metabolomics))
+```
+
+Now that they are matching and we have a final table, add the linear mixed model. It should replicate Lauren's SAS:
+
+Proc mixed data=UrineKB1;
+class  ARM Treatment SubjectID;
+model METABOLITE= ARM Treatment;
+random SubjectID;
+estimate ‘ARM LC/LF’ intercept 1 Arm 1 0;
+estimate ‘ARM LF/LC’ intercept 1 ARM 0 1;
+estimate ‘LC/LF vs LF/LC’ ARM 1 -1;
+ods output Estimates = tem;
+quit;
+
+
+https://www.r-bloggers.com/2017/12/linear-mixed-effect-models-in-r/
+
+``` {r Mixed model}
+
+metabolite <- c()
+metadata_col <- c()
+pval <- c()
+
+for (i in 1:ncol(metabolomics)){
+  metabo = unlist(metabolomics[,i])
+  metad = as.factor(unlist(metadata$DIET_ORDER))
+  si = unlist(metadata$SUBJECT_ID)
+  lc_lf <- as.factor(unlist(metadata$DIET))
+  lf_lc <-
+  myD = data.frame(metabo, metad, pn)
+  myLme = lme(metabo ~ metad + , 
+    method= "REML", 
+    random = ~1 | si,
+    # fixed = 
+    na.action = 'na.omit',
+    data = myD
+    )
+  myAnova = anova(myLme)
+  myPval = myAnova$"p-value"[2]
+  metaboliteNames = c(metaboliteNames, row.names(testingData)[i1])
+  metadataCatagories = c(metadataCatagories, row.names(metadata)[i2])
+  pvals =  c(pvals, myPval)
+}
+
+lmeMetadata = function(testingData, label){
+  if(!require(nlme)){install.packages("nlme")}
+  library("nlme")
+  
+  metaboliteNames = c()
+  metadataCatagories = c()
+  pvals = c()
+  
+  #vessel to hold the failures for future reference
+  failedLme <<- data.frame(#'<<-' gives global scope
+    metaboliteName = character(0), 
+    metaboliteRowNum = numeric(0), 
+    metadataName = character(0),
+    metadataRowNum = numeric(0)
+    )
+  
+  for (i1 in 1:nrow(testingData)){
+    #print(paste('i1:',i1))
+    for (i2 in 1:nrow(metadata)){
+      #print(paste('i2:',i2))
+      if (row.names(metadata)[i2] != 'plant number'){
+        tryCatch(
+          {
+          metabo = unlist(testingData[i1,])
+          metad = as.factor(unlist(metadata[i2,]))
+          pn = unlist(metadata['plant number',])
+          myD = data.frame(metabo, metad, pn)
+          myLme = lme(metabo ~ metad, 
+            method= "REML", 
+            random = ~1 | pn, 
+            na.action = 'na.omit',
+            data = myD
+            )
+          myAnova = anova(myLme)
+          myPval = myAnova$"p-value"[2]
+          metaboliteNames = c(metaboliteNames, row.names(testingData)[i1])
+          metadataCatagories = c(metadataCatagories, row.names(metadata)[i2])
+          pvals =  c(pvals, myPval)
+          },
+          error=function(cond) {
+            #metaboliteName, metaboliteRowNum, metadataName, metadataRowNum
+            myRow = list(row.names(testingData)[i1], i1, row.names(metadata)[i2], i2)
+            names(myRow) = c('metaboliteName', 'metaboliteRowNum', 'metadataName', 'metadataRowNum')
+           # print(metabo)
+            failedLme <<- rbind(failedLme, data.frame(myRow))
+            #print('an error is thrown')
+            message(cond)
+            # Choose a return value in case of error
+            # return(NA)
+          },
+          warning=function(cond) {
+            print('a warning is thrown')
+            myRow = list(row.names(testingData)[i1], i1, row.names(metadata)[i2], i2)
+            names(myRow) = c('metaboliteName', 'metaboliteRowNum', 'metadataName', 'metadataRowNum')
+            #print(names(myRow))
+            failedLme = rbind(failedLme, data.frame(myRow))
+            #print('failedLme warning')
+            message(cond)
+            # Choose a return value in case of warning
+            #return(NULL)
+          }
+        )
+      }
+    }
+  }
+  
+  pvalAdj = p.adjust(pvals, method = "BH")
+  
+  dFrame <- data.frame(pvals,pvalAdj,metaboliteNames,metadataCatagories)
+  dFrame <- dFrame[order(dFrame$pvalAdj),]
+  
+  write.table(dFrame, file=paste(ds, "MetaVs", label, "Lme.txt", sep = ''), row.names=FALSE, sep="\t")
+  
+  write.table(failedLme, file=paste(ds, "FailedMetaVs", label, "Lme.txt", sep = ''), row.names=FALSE, sep="\t")
+  
+  pubDf = reshape(dFrame, idvar = 'metaboliteNames', timevar = 'metadataCatagories', direction="wide", sep="", drop = 'pvals')
+  write.table(format(pubDf, digits = 3), file=paste(ds, "MetaVs",label,"ReformatShortLme.txt", sep = ''), row.names=FALSE, sep="\t")
+  
+  pdf(paste(ds, "HistogramMetaVs", label, ".pdf", sep=""))
+  hist(pvals, 
+    main = paste('Histogram of lme pvalues for ', label),
+    xlab = 'Uncorrected pvalues',
+    breaks = 50
+  )
+  dev.off()
+  
+  pdf(paste(ds, "MetaVs", label, "Lme.pdf", sep=""))
+  par(bty = 'l', 
+    mar = c(5, 4, 5, 2) + 0.1)
+  for( i in 1:nrow(dFrame)){
+  	aTitle <- paste(  dFrame$metaboliteNames[i], "vs",  dFrame$metadataCatagories[i], "\nAdjusted Pvalue=", dFrame$pvalAdj[i])
+  
+  	plot( as.factor(as.character(metadata[as.character(dFrame$metadataCatagories[i]),])),
+  	  unlist(testingData[as.character(dFrame$metaboliteNames[i]),]),
+  	  main = aTitle,
+  	  xlab = as.character(dFrame$metadataCatagories[i]),
+  	  ylab = as.character(dFrame$metaboliteNames[i])
+  	  )
+  }
+  dev.off()
+  print('successfull run of lmeMetadata')
+}#end function
 
 ```
+
+
+
+
+
 
