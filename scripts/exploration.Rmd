@@ -198,16 +198,14 @@ for (i in 1:ncol(metabolomics)){
   metaboliteName <- colnames(metabolomics)[i]
   myD <- my_metadata
   myD$metabo <- unlist(metabolomics[,i])
-  
   tryCatch(expr = {
-          # myLme = nlme::lme( metabo ~ DIET_ORDER*TIMEPOINT + DIET*TIMEPOINT,
-          # random = ~ 1 + TIMEPOINT | SUBJECT_ID,
-          # data = myD)
-          myLme = nlme::gls(metabo ~  DIET_ORDER*TIMEPOINT + DIET*TIMEPOINT,
-          na.action=na.omit, data=myD,
-          correlation=nlme::corSymm(form= ~ as.integer(TIMEPOINT) | SUBJECT_ID),
-          weights=nlme::varIdent(form=~1|TIMEPOINT)
-          )
+          myLme <- nlme::lme( metabo ~ DIET_ORDER + DIET,
+          random = ~ TIMEPOINT | SUBJECT_ID,
+          data = myD)
+          # myLme = nlme::gls(metabo ~  DIET_ORDER*TIMEPOINT + DIET*TIMEPOINT,
+          # na.action=na.omit, data=myD,
+          # correlation=nlme::corSymm(form= ~ as.integer(TIMEPOINT) | SUBJECT_ID),
+          # weights=nlme::varIdent(form=~1|TIMEPOINT))
           },
           error=function(cond) {
             failed_metabolites <<- c(failed_metabolites, metaboliteName)
@@ -231,10 +229,10 @@ for (i in 1:ncol(metabolomics)){
   myPval = myAnova$"p-value"[2]
   metaboliteNames = c(metaboliteNames, metaboliteName)
   pvals =  c(pvals, myPval)
-  metabo_levs <- c(metabo_levs, metabolomics)
-  # cs <- as.data.frame(summary(myLme)$tTable)
-  # dietorder_pval <- cs["DIET_ORDER2", "p-value"]
-  # dietorder_pvals <- c(dietorder_pvals, dietorder_pval)
+  # metabo_levs <- c(metabo_levs, metabolomics)
+  cs <- as.data.frame(summary(myLme)$tTable)
+  dietorder_pval <- cs["DIET_ORDER2", "p-value"]
+  dietorder_pvals <- c(dietorder_pvals, dietorder_pval)
 }
 
 names(dietorder_pvals) <- metaboliteNames
@@ -380,18 +378,49 @@ for (metabo in failed_metabolites){
 
 ```{r Sub pathway analysis}
 sub_pathways <- unique(urine_metabo_path$SUB_PATHWAY)
-output <- ""
-
+# output <- ""
+sub_pvals <- c()
+sub_paths <- c()
 for (sub_p in 1:length(sub_pathways)){
-           pw_nm <- sub_pathways[sub_p]
-           my_pv <- sup_path_f(result_pv = pvals,
-           pathway_col = "SUB_PATHWAY",
-           pathway_name = pw_nm,
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-           output <- paste0(output, pw_nm, ": ", my_pv, "\n")
-
+  tryCatch({
+    pw_nm <- sub_pathways[sub_p]
+    my_pv <- sup_path_f(result_pv = pvals,
+                        pathway_col = "SUB_PATHWAY",
+                        pathway_name = pw_nm,
+                        pathway_df = urine_metabo_path,
+                        metabolomic_df = metabolomics)
+     # output <- paste0(output, pw_nm, ": ", my_pv, "\n")
+     sub_pvals <- c(sub_pvals, my_pv)
+     sub_paths <- c(sub_paths, pw_nm)
+    },
+    error=function(cond){
+            print(paste("an error is thrown on iteration", sub_p, pw_nm))
+            message(cond)
+            # Choose a return value in case of error
+            # return(NA)
+          }
+    # warning=function(cond) {
+    #   print(paste("a warning is thrown on iteration", sub_p))
+    #   message(cond)
+    # 
+    #   # Choose a return value in case of warning
+    #   # return(NULL)
+    # }
+  )
 }
+names(sub_pvals) <- sub_paths
+model1_mean_pval <- mean(sub_pvals)
+sig_metabo <- which(sub_pvals < 0.05)
+
+print(paste("mean global pval for model1:", model1_mean_pval, "\n", sum(sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites" ))
+print(paste(names(sub_pvals)[sig_metabo], collapse = ", "))
+
+adj_sub_pvals <- p.adjust(sub_pvals, method = "BH")
+model1_mean_adj_pval <- mean(adj_sub_pvals)
+sig_metabo <- which(adj_sub_pvals < 0.05)
+
+print(paste("mean global adj_pval for model1:", model1_mean_adj_pval, "\n", sum(adj_sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites \n", sub_paths[sig_metabo]))
+
 ```
 
 
