@@ -48,7 +48,7 @@ print("Libraries are loaded.")
 The metadata contains the processed vs unprocessed info and the order component.
 
 To build our LMM, we need to have a table with only the following columns:
-  SUBJECT_ID, ORDER, DIET, TIMEPOINT.
+SUBJECT_ID, ORDER, DIET, TIMEPOINT.
 
 ```{r Load and organize metadata}
 #### Read metadata ####
@@ -58,6 +58,7 @@ metadata <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NIDDK_linking_LEO_
 print(paste("original metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
 metadata <- metadata[metadata$Sample_matrix == "24h Urine",]
 metadata <- metadata[metadata$STUDY_NAME == "ADL",]
+metadata <- metadata[metadata$TIMEPOINT %in% c(2,4),]
 print(paste("24h urine metadata nrow/ncol:", paste(dim(metadata), collapse = "/")))
 metadata <- na.omit(metadata)
 print(paste("metadata no NA nrow/ncol:", paste(dim(metadata), collapse = "/")))
@@ -72,34 +73,6 @@ metadata$TIMEPOINT <- ordered(as.factor(metadata$TIMEPOINT))
 
 print(paste("final metad r/c:", paste(dim(metadata), collapse = "/")))
 ```
-
-
-
-This next chunk is a side quest to investigate normalization.
-
-```{r Scaling investigation}
-#Taken from https://app.box.com/folder/132711394563
-initial_table <- data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
-                                   data.table = FALSE)
-print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
-
-#### Reorganize and preprocess table ####
-initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled",]
-print(paste("filtered rw/col:", paste(dim(initial_table), collapse = "/")))
-
-#Remove non-metabolomic columns
-row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
-initial_table <- initial_table[,7:ncol(initial_table)]
-print(paste("rn row rw/col:", paste(dim(initial_table), collapse = "/")))
-
-row_median <- apply(initial_table, 1, median, na.rm=TRUE)
-col_median <- apply(initial_table, 2, median, na.rm=TRUE)
-df_median <- median(as.matrix(initial_table))
-
-print(median(row_median))
-```
-It appears that the scaling is so that the median of the row medians is 1.
-
 
 The metadata starts with 294 rows, but some of those are either full of NA
 values or not 24h urine samples. After removing these, there are only 80 rows.
@@ -153,7 +126,6 @@ initial_table <- initial_table[,!sapply(initial_table,
 print(paste("CV rw/col:", paste(dim(initial_table), collapse = "/")))
 ```
 
-
 ```{r makes scaled imp table}
 my_cols <- names(initial_table)
 
@@ -169,39 +141,38 @@ metabolomics <- log2(metabolomics)
 
 ```
 
+Now that they are matching and we have a final table, add the linear mixed
+model. It should replicate Lauren's SAS:
 
-Now that they are matching and we have a final table, add the linear mixed model. It should replicate Lauren's SAS:
+Proc mixed data=UrineKB1; class ARM Treatment SubjectID; model METABOLITE= ARM
+Treatment; random SubjectID; estimate 'ARM LC/LF' intercept 1 Arm 1 0; estimate
+'ARM LF/LC' intercept 1 ARM 0 1; estimate 'LC/LF vs LF/LC' ARM 1 -1; ods output
+Estimates = tem; quit;
 
-Proc mixed data=UrineKB1;
-class  ARM Treatment SubjectID;
-model METABOLITE= ARM Treatment;
-random SubjectID;
-estimate ‘ARM LC/LF’ intercept 1 Arm 1 0;
-estimate ‘ARM LF/LC’ intercept 1 ARM 0 1;
-estimate ‘LC/LF vs LF/LC’ ARM 1 -1;
-ods output Estimates = tem;
-quit;
+<https://www.r-bloggers.com/2017/12/linear-mixed-effect-models-in-r/>
+<https://mspeekenbrink.github.io/sdam-r-companion/linear-mixed-effects-models.html>
 
-
-https://www.r-bloggers.com/2017/12/linear-mixed-effect-models-in-r/
-https://mspeekenbrink.github.io/sdam-r-companion/linear-mixed-effects-models.html
-
-``` {r Mixed model}
+```{r Mixed model}
 metaboliteNames <- c()
 metadata_col <- c()
 pvals <- c()
 failed_metabolites <-c()
-metabo_levs <- c()
-dietorder_pvals <- c()
-
+metadata <- within(metadata, rm("TIMEPOINT"))
 for (i in 1:ncol(metabolomics)){
   metaboliteName <- colnames(metabolomics)[i]
-  myD <- my_metadata
+  myD <- metadata
   myD$metabo <- unlist(metabolomics[,i])
   tryCatch(expr = {
           myLme <- nlme::lme( metabo ~ DIET_ORDER + DIET,
-          random = ~ TIMEPOINT | SUBJECT_ID,
+          random = ~ 1 | SUBJECT_ID,
           data = myD)
+          
+          #Pull out pvalue for diet_order variable to run through pooled R
+          #Look into failed
+          metaboliteNames = c(metaboliteNames, metaboliteName)
+          cs <- as.data.frame(summary(myLme)$tTable)
+          dietorder_pval <- cs["DIET_ORDER2", "p-value"]
+          pvals <- c(dietorder_pvals, dietorder_pval)
           # myLme = nlme::gls(metabo ~  DIET_ORDER*TIMEPOINT + DIET*TIMEPOINT,
           # na.action=na.omit, data=myD,
           # correlation=nlme::corSymm(form= ~ as.integer(TIMEPOINT) | SUBJECT_ID),
@@ -223,19 +194,8 @@ for (i in 1:ncol(metabolomics)){
             # return(NULL)
           }
         )
-  #Pull out pvalue for diet_order variable to run through pooled R
-  #Look into failed
-  myAnova = anova(myLme)
-  myPval = myAnova$"p-value"[2]
-  metaboliteNames = c(metaboliteNames, metaboliteName)
-  pvals =  c(pvals, myPval)
-  # metabo_levs <- c(metabo_levs, metabolomics)
-  cs <- as.data.frame(summary(myLme)$tTable)
-  dietorder_pval <- cs["DIET_ORDER2", "p-value"]
-  dietorder_pvals <- c(dietorder_pvals, dietorder_pval)
 }
 
-names(dietorder_pvals) <- metaboliteNames
 names(pvals) <- metaboliteNames
 
 model1_mean_pval <- mean(pvals)
@@ -243,27 +203,15 @@ adj_pvals <- p.adjust(pvals, method = "BH")
 model1_mean_adj_pval <- mean(adj_pvals)
 sig_metabo <- which(adj_pvals < 0.05)
 
-print(paste("mean global pval for model1:", model1_mean_pval, "\n", sum(pvals < 0.05), "significant out of", length(pvals),"metabolites"))
+print(paste("mean dietorder pval for model1:", model1_mean_pval, "\n", sum(pvals < 0.05), "significant out of", length(pvals),"metabolites"))
 
-print(paste("mean global adj_pval for model1:", model1_mean_adj_pval, "\n", sum(adj_pvals < 0.05), "significant out of", length(pvals),"metabolites \n", metaboliteNames[sig_metabo]))
-
-
-
-model1_DO_mean_pval <- mean( dietorder_pvals)
-DO_adj_pvals <- p.adjust(dietorder_pvals, method = "BH")
-model1_DO_mean_adj_pval <- mean(DO_adj_pvals)
-DO_sig_metabo <- which(adj_pvals < 0.05)
-print(paste("mean DIET_ORDER pval for model1:", model1_DO_mean_pval, "\n", 
-            sum(dietorder_pvals < 0.05), "significant out of", 
-            length(dietorder_pvals),"metabolites"))
-
-print(paste("mean DIET_ORDER adj_pval for model1:", model1_DO_mean_adj_pval, "\n", sum(DO_adj_pvals < 0.05), "significant out of", length(pvals),"metabolites \n", metaboliteNames[DO_sig_metabo]))
+print(paste("mean dietorder adj_pval for model1:", model1_mean_adj_pval, "\n", sum(adj_pvals < 0.05), "significant out of", length(pvals),"metabolites \n", metaboliteNames[sig_metabo]))
 
 ```
 
 Add the pvalue pooling from Erikka's code.
 
-``` {r Combine metabolites based on pathway}
+```{r Combine metabolites based on pathway}
 #function to combine pvalues based on pathway using Fisher's method
 sup_path_f <- function(result_pv, pathway_col = "SUPER_PATHWAY", 
                        pathway_name, pathway_df, metabolomic_df){
@@ -286,94 +234,58 @@ sup_path_f <- function(result_pv, pathway_col = "SUPER_PATHWAY",
   return(z)
 }
 
+```
 
+
+
+```{r Sup pathway analysis}
 set.seed(5627)
-# plasma analysis for super pathway
-AA <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Amino Acid",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Lipid <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Lipid",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Carb <- CoV <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Carbohydrate",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-CoV <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Cofactors and Vitamins",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Energy <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Energy",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Nuc <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Nucleotide",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-PCM <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Partially Characterized Molecules",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Pep <- sup_path_f(result_pv = pvals, 
-           pathway_name = "Peptide",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-# Xeno <- sup_path_f(result_pv = pvals,
-#            pathway_name = "Xenobiotics",
-#            pathway_df = urine_metabo_path,
-#            metabolomic_df = metabolomics)
-```
-```{r check DIET_ORDER pvals}
-
-AA <- sup_path_f(result_pv = dietorder_pvals,
-           pathway_name = "Amino Acid",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Lipid <- sup_path_f(result_pv = dietorder_pvals,
-           pathway_name = "Lipid",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Carb <- CoV <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Carbohydrate",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-CoV <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Cofactors and Vitamins",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Energy <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Energy",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Nuc <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Nucleotide",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-PCM <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Partially Characterized Molecules",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-Pep <- sup_path_f(result_pv = dietorder_pvals, 
-           pathway_name = "Peptide",
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-# Xeno <- sup_path_f(result_pv = dietorder_pvals,
-#            pathway_name = "Xenobiotics",
-#            pathway_df = urine_metabo_path,
-#            metabolomic_df = metabolomics)
-
-```
-
-``` {r side investigation of failed matabolites}
-
-for (metabo in failed_metabolites){
-  print(paste(metabo,sum(metabolomics[,metabo] == 0)/nrow(metabolomics)))
+sup_pathways <- unique(urine_metabo_path$SUPER_PATHWAY)
+# output <- ""
+sup_pvals <- c()
+sup_paths <- c()
+for (sup_p in 1:length(sup_pathways)){
+  tryCatch({
+    pw_nm <- sup_pathways[sup_p]
+    my_pv <- sup_path_f(result_pv = pvals,
+                        pathway_col = "SUPER_PATHWAY",
+                        pathway_name = pw_nm,
+                        pathway_df = urine_metabo_path,
+                        metabolomic_df = metabolomics)
+     # output <- paste0(output, pw_nm, ": ", my_pv, "\n")
+     sup_pvals <- c(sup_pvals, my_pv)
+     sup_paths <- c(sup_paths, pw_nm)
+    },
+    error=function(cond){
+            print(paste("an error is thrown on iteration", sup_p, pw_nm))
+            message(cond)
+            # Choose a return value in case of error
+            # return(NA)
+          }
+    # warning=function(cond) {
+    #   print(paste("a warning is thrown on iteration", sup_p))
+    #   message(cond)
+    # 
+    #   # Choose a return value in case of warning
+    #   # return(NULL)
+    # }
+  )
 }
+names(sup_pvals) <- sup_paths
+model1_mean_pval <- mean(sup_pvals)
+sig_metabo <- which(sup_pvals < 0.05)
+
+print(paste("mean pval for pooled pvals:", model1_mean_pval, "\n", sum(sup_pvals < 0.05), "significant out of", length(sup_pvals),"metabolites" ))
+print(paste(names(sup_pvals)[sig_metabo], collapse = ", "))
+
+adj_sup_pvals <- p.adjust(sup_pvals, method = "BH")
+model1_mean_adj_pval <- mean(adj_sup_pvals)
+sig_metabo <- which(adj_sup_pvals < 0.05)
+
+print(paste("mean pooled adj_pval:", model1_mean_adj_pval, "\n", sum(adj_sup_pvals < 0.05), "significant out of", length(sup_pvals),"metabolites \n", sup_paths[sig_metabo]))
 
 ```
+
 
 
 ```{r Sub pathway analysis}
@@ -412,136 +324,15 @@ names(sub_pvals) <- sub_paths
 model1_mean_pval <- mean(sub_pvals)
 sig_metabo <- which(sub_pvals < 0.05)
 
-print(paste("mean global pval for model1:", model1_mean_pval, "\n", sum(sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites" ))
+print(paste("mean pooled pval:", model1_mean_pval, "\n", sum(sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites" ))
 print(paste(names(sub_pvals)[sig_metabo], collapse = ", "))
 
 adj_sub_pvals <- p.adjust(sub_pvals, method = "BH")
 model1_mean_adj_pval <- mean(adj_sub_pvals)
 sig_metabo <- which(adj_sub_pvals < 0.05)
 
-print(paste("mean global adj_pval for model1:", model1_mean_adj_pval, "\n", sum(adj_sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites \n", sub_paths[sig_metabo]))
+print(paste("mean pooled adj_pval:", model1_mean_adj_pval, "\n", sum(adj_sub_pvals < 0.05), "significant out of", length(sub_pvals),"metabolites \n", sub_paths[sig_metabo]))
 
 ```
 
 
-```{r Sub pathway analysis DIET_ORDER }
-sub_pathways <- unique(urine_metabo_path$SUB_PATHWAY)
-output <- ""
-
-for (sub_p in 1:length(sub_pathways)){
-           pw_nm <- sub_pathways[sub_p]
-           my_pv <- sup_path_f(result_pv = pvals,
-           pathway_col = "SUB_PATHWAY",
-           pathway_name = pw_nm,
-           pathway_df = urine_metabo_path,
-           metabolomic_df = metabolomics)
-           output <- paste0(output, pw_nm, ": ", my_pv, "\n")
-
-}
-```
-
-
-Model 2
-
-``` {r Mixed model}
-metaboliteNames <- c()
-metadata_col <- c()
-pvals <- c()
-failed_metabolites <-c()
-
-for (i in 1:ncol(metabolomics)){
-  metaboliteName <- colnames(metabolomics)[i]
-  myD <- my_metadata
-  myD$metabo <- unlist(metabolomics[,i])
-  
-  tryCatch(expr = {
-          myLme = nlme::lme(metabo ~ DIET_ORDER + TIMEPOINT + DIET*TIMEPOINT + DIET_ORDER*TIMEPOINT,
-          method= "REML",
-          random = ~ 1 | SUBJECT_ID,
-          data = myD)
-          },
-          error=function(cond) {
-            failed_metabolites <- c(failed_metabolites, metaboliteName)
-            print(paste("an error is thrown on", metaboliteName))
-            message(cond)
-            # Choose a return value in case of error
-            # return(NA)
-          },
-          warning=function(cond) {
-            print(paste("a warning is thrown on", metaboliteName))
-            message(cond)
-            # Choose a return value in case of warning
-            # return(NULL)
-          }
-        )
-  
-  myAnova = anova(myLme)
-  myPval = myAnova$"p-value"[2]
-  metaboliteNames = c(metaboliteNames, metaboliteName)
-  pvals =  c(pvals, myPval)
-}
-
-model2_mean_pval <- mean(pvals)
-adj_pvals <- p.adjust(pvals, method = "BH")
-model2_mean_adj_pval <- mean(adj_pvals)
-
-print(paste("mean pval for model2:", model2_mean_pval, "\n", sum(pvals < 0.05), "significant out of", length(pvals),"metabolites"))
-
-print(paste("mean adj_pval for model2:", model2_mean_adj_pval, "\n", sum(adj_pvals < 0.05), "significant out of", length(pvals),"metabolites"))
-```
-
-model 3
-``` {r Mixed model}
-metaboliteNames <- c()
-metadata_col <- c()
-pvals <- c()
-failed_metabolites <-c()
-
-for (i in 1:2){
-  metaboliteName <- colnames(metabolomics)[i]
-  myD <- my_metadata
-  myD$metabo <- unlist(metabolomics[,i])
-  
-  tryCatch(expr = {
-          myLme = nlme::lme(metabo ~ DIET_ORDER + DIET*DIET_ORDER,
-          random= ~1 + SUBJECT_ID + TIMEPOINT,
-          data = myD)
-          },
-          error=function(cond) {
-            failed_metabolites <- c(failed_metabolites, metaboliteName)
-            print(paste("an error is thrown on", metaboliteName))
-            message(cond)
-            # Choose a return value in case of error
-            # return(NA)
-          },
-          warning=function(cond) {
-            print(paste("a warning is thrown on", metaboliteName))
-            message(cond)
-            # Choose a return value in case of warning
-            # return(NULL)
-          }
-        )
-  
-  myAnova = anova(myLme)
-  myPval = myAnova$"p-value"[2]
-  metaboliteNames = c(metaboliteNames, metaboliteName)
-  pvals =  c(pvals, myPval)
-}
-
-model3_mean_pval <- mean(pvals)
-adj_pvals <- p.adjust(pvals, method = "BH")
-model3_mean_adj_pval <- mean(adj_pvals)
-
-print(paste("mean pval for model3:", model3_mean_pval, "\n", sum(pvals < 0.05), "significant out of", length(pvals),"metabolites"))
-
-print(paste("mean adj_pval for model3:", model3_mean_adj_pval, "\n", sum(adj_pvals < 0.05), "significant out of", length(pvals),"metabolites"))
-```
-
-
-Need to visualize model and pvalues
-```{r Visualizations}
-sig_metabolites <- metaboliteNames[pvals < 0.05]
-
-plot(metabolomics[,sig_metabolites[1]], )
-
-```
