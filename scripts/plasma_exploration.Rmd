@@ -161,7 +161,7 @@ print(paste("meta-match rw/col:", paste(dim(metabolomics), collapse = "/")))
 identical(row.names(metadata), row.names(metabolomics))
 
 #log2 table
-metabolomics <- log2(abs(metabolomics))
+# metabolomics <- log2(abs(metabolomics))
 
 ```
 
