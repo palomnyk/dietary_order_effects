@@ -47,6 +47,7 @@ if(!require("poolr")){install.packages("poolr")}
 print("Libraries are loaded.")
 ```
 ```{r functions}
+
 filter_metabolites <- function(df) {
   #Remove columns that all but 2 NA
   df <- df[,!sapply(df, function(x) length(which(is.na(x))) >= nrow(df)-2)]
@@ -78,15 +79,20 @@ simple_model <- function(metabolomics, metadata) {
     myD <- metadata
     myD$metabo <- unlist(metabolomics[,i])
     tryCatch(expr = {
-            myLme <- nlme::lme( metabo ~ DIET_ORDER + DIET,
+            myLme <- nlme::lme( metabo ~ DIET_ORDER + DIET + DIET_ORDER*DIET,
             random = ~ 1 | SUBJECT_ID,
             data = myD)
-            
+            #take DIET_ORDER*DIET back out if nothing improves
             #Pull out pvalue for diet_order variable to run through pooled R
             #Look into failed
             metaboliteNames <- c(metaboliteNames, metaboliteName)
             cs <- as.data.frame(summary(myLme)$tTable)
-            dietorder_pval <- cs["DIET_ORDER2", "p-value"]
+            print(cs)
+            if ( !startsWith(row.names(cs)[2], "DIET_ORDER")){
+              print("It isn't the first row.")
+              print(paste(row.names(cs), collapse = ", "))
+            }
+            dietorder_pval <- cs[2, "p-value"]
             pvals <- c(pvals, dietorder_pval)
             # myLme = nlme::gls(metabo ~  DIET_ORDER*TIMEPOINT + DIET*TIMEPOINT,
             # na.action=na.omit, data=myD,
@@ -126,19 +132,22 @@ simple_model <- function(metabolomics, metadata) {
 }
 
 pathway_loop <- function(result_pv, 
-                         pathway_col = "SUPER_PATHWAY", 
-                         pathway_df, 
+                         pathway_col = "SUPER_PATHWAY",
+                         chem_col = "SAS_NAME",
+                         pathway_df,
                          metabolomic_df) {#function to combine pvalues based on pathway using Fisher's method
   # inner function for pathway loop
-  sup_path_f <- function(result_pv, pathway_col = "SUPER_PATHWAY", 
+  sup_path_f <- function(result_pv, pathway_col = "SUPER_PATHWAY", chem_col = "SAS_NAME",
                          pathway_name, pathway_df, metabolomic_df){
     # Note: result_pv is the result pvals with the metabolites as the names
   
     # filtering results data set for those in the super pathway of analysis
-    pathway_metabos <- pathway_df$SAS_NAME[which(pathway_df[,pathway_col] == pathway_name)]
-    
+    # print(paste(names(result_pv)[1:5], collapse = ", "))
+    pathway_metabos <- pathway_df[,chem_col][which(pathway_df[,pathway_col] == pathway_name)]
+    # print(paste(names(result_pv)[1:5], collapse = ", "))
+    # print(length(pathway_metabos))
     # filter pvals to only use those that are found in super pathway
-    pval_subset <- result_pv[which(names(result_pv) %in% toupper(pathway_metabos))]
+    pval_subset <- result_pv[which(toupper(names(result_pv)) %in% toupper(pathway_metabos))]
     # filter metabolite data
     meta_small <- metabolomic_df[,names(pval_subset)]
     # create correlation matrix
@@ -151,7 +160,18 @@ pathway_loop <- function(result_pv,
     return(z)
   }
   
+  df_upper_case <- function(df) {
+    return(
+    data.frame(lapply(df, function(v) {
+    if (is.character(v)) return(toupper(v))
+    else return(v)
+    })))
+  }
+  
   set.seed(5627)
+  if(!pathway_col %in% pathway_df){
+    simpleError(paste("Pathway col not in pathway df:", pathway_col))
+  }
   sup_pathways <- unique(pathway_df[,pathway_col])
   sup_pathways <- sup_pathways[nzchar(sup_pathways) & complete.cases(sup_pathways)]
   sup_pvals <- c()
@@ -159,13 +179,15 @@ pathway_loop <- function(result_pv,
   for (sup_p in 1:length(sup_pathways)){
     tryCatch({
       pw_nm <- sup_pathways[sup_p]
+      
       my_pv <- sup_path_f(result_pv = result_pv,
                     pathway_col = pathway_col,
                     pathway_name = pw_nm,
+                    chem_col = chem_col,
                     pathway_df = pathway_df,
                     metabolomic_df = metabolomic_df)
-       sup_pvals <- c(sup_pvals, my_pv)
-       sup_paths <- c(sup_paths, pw_nm)
+      sup_pvals <- c(sup_pvals, my_pv)
+      sup_paths <- c(sup_paths, pw_nm)
       },
       error=function(cond){
               print(paste("an error is thrown on iteration", sup_p, pw_nm))
@@ -185,16 +207,6 @@ pathway_loop <- function(result_pv,
   names(sup_pvals) <- sup_paths
   model1_mean_pval <- mean(sup_pvals)
   sig_metabo <- which(sup_pvals < 0.05)
-  
-  # print(paste("mean pval for pooled pvals:", model1_mean_pval, "\n", sum(sup_pvals < 0.05), "significant out of", length(sup_pvals),"metabolites" ))
-  # print(paste(names(sup_pvals)[sig_metabo], collapse = ","))
-  # 
-  # adj_sup_pvals <- p.adjust(sup_pvals, method = "BH")
-  # model1_mean_adj_pval <- mean(adj_sup_pvals)
-  # sig_metabo <- which(adj_sup_pvals < 0.05)
-  # 
-  # print(paste("mean pooled adj_pval:", model1_mean_adj_pval, "\n", sum(adj_sup_pvals < 0.05), "significant out of", length(sup_pvals),"metabolites \n"))
-  # print(paste(names(sup_pvals)[sig_metabo], collapse = ", "))
 
   return(sup_pvals)
 }
@@ -274,7 +286,6 @@ initial_table <- initial_table[,my_cols]
 #log2 table
 urine_metabolomics <- log2(initial_table)
 ```
-
 
 
 
@@ -361,97 +372,24 @@ plasma_metabo_path <- data.table::fread(file = file.path("data", "NIDDK_plasma_m
                                    data.table = FALSE)
 
 # Super pathways
-urine_sup_pv <- pathway_loop(result_pv = urine_pvals,
+adl_urine_sup_pv <- pathway_loop(result_pv = urine_pvals,
                              pathway_col = "SUPER_PATHWAY",
                              pathway_df = urine_metabo_path,
                              metabolomic_df = urine_metabolomics)
-plasma_sup_pv <- pathway_loop(result_pv = plasma_pvals,
+adl_plasma_sup_pv <- pathway_loop(result_pv = plasma_pvals,
                              pathway_col = "SUPER_PATHWAY",
                              pathway_df = plasma_metabo_path,
                              metabolomic_df = plasma_metabolomics)   
     
 # Sub pathways
-urine_sub_pv <- pathway_loop(result_pv = urine_pvals,
+adl_urine_sub_pv <- pathway_loop(result_pv = urine_pvals,
                              pathway_col = "SUB_PATHWAY",
                              pathway_df = urine_metabo_path,
                              metabolomic_df = urine_metabolomics)
-plasma_sub_pv <- pathway_loop(result_pv = plasma_pvals,
+adl_plasma_sub_pv <- pathway_loop(result_pv = plasma_pvals,
                              pathway_col = "SUB_PATHWAY",
                              pathway_df = plasma_metabo_path,
                              metabolomic_df = plasma_metabolomics)   
-
-```
-
-
-```{r figures}
-library("ggplot2")
-
-my_df <- data.frame("pathways" = c(names(plasma_sup_pv), names(urine_sup_pv)), 
-                    "pval" = -log10(c(plasma_sup_pv, urine_sup_pv)),
-                    "tissue" = c(rep("plasma", length(plasma_sup_pv)), rep("urine", length(urine_sup_pv))))
-
-axis_font_size <- 12
-font_type <- "TT Arial"
-
-ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
-  ggplot2::geom_hline(yintercept = -log10(0.05), color = "red") +
-  geom_point() +
-  labs(colour = "Legend") +
-  ggtitle(paste0("ADL Super pathway analysis")) + # Blank Title for the Graph
-          xlab("Super pathways") +
-          ylab(paste("-log(pvalue)")) +
-          theme(line = element_line(colour = "black", linewidth = 1), 
-                # strip.background = element_rect(fill="gray90"),
-                axis.text.x = element_text(angle = 90, hjust=1),
-                axis.line.x = element_line(colour = "black"),
-                axis.line.y = element_line(colour = "black"),
-                # panel.border= element_blank(),
-                panel.grid.major = element_blank(),
-                panel.grid.minor = element_blank(),
-                panel.background = element_blank(),
-                # axis.ticks = element_blank(),
-                # axis.title.x = element_text(family=font_type,colour = "Black", margin = margin(t = 20, r = 0, b = 0, l =0)),
-                # axis.title.y = element_text(family=font_type,colour = "Black", margin = margin(t = 0, r = 20, b = 0, l = 0)),
-                # plot.title = element_text(family=font_type, colour = "Black", margin = margin(t = 0, r = 0, b = 20, l = 0)),
-                # axis.text=element_text(family=font_type,size=axis_font_size, color = "Black"),
-                # text=element_text(family=font_type,size=axis_font_size), plot.margin = margin(t = 2, r = 2, b = 2, l = 2, unit = "cm")
-          )
-```
-
-
-```{r sub figures}
-library("ggplot2")
-
-my_df <- data.frame("pathways" = c(names(plasma_sub_pv), names(urine_sub_pv)), 
-                    "pval" = -log10(c(plasma_sub_pv, urine_sub_pv)),
-                    "tissue" = c(rep("plasma", length(plasma_sub_pv)), rep("urine", length(urine_sub_pv))))
-
-axis_font_size <- 12
-font_type <- "TT Arial"
-
-ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
-  ggplot2::geom_hline(yintercept = -log10(0.05), color = "red") +
-  geom_point() +
-  labs(colour = "Legend") +
-  ggtitle(paste0("ADL sub pathway analysis")) + # Blank Title for the Graph
-          xlab("Sub pathways") +
-          ylab(paste("-log(pvalue)")) +
-          theme(line = element_line(colour = "black", linewidth = 1), 
-                # strip.background = element_rect(fill="gray90"),
-                axis.text.x = element_text(angle = 90, hjust=1, size = 6),
-                axis.line.x = element_line(colour = "black"),
-                axis.line.y = element_line(colour = "black"),
-                # panel.border= element_blank(),
-                panel.grid.major = element_blank(),
-                panel.grid.minor = element_blank(),
-                panel.background = element_blank(),
-                # axis.ticks = element_blank(),
-                # axis.title.x = element_text(family=font_type,colour = "Black", margin = margin(t = 20, r = 0, b = 0, l =0)),
-                # axis.title.y = element_text(family=font_type,colour = "Black", margin = margin(t = 0, r = 20, b = 0, l = 0)),
-                # plot.title = element_text(family=font_type, colour = "Black", margin = margin(t = 0, r = 0, b = 20, l = 0)),
-                # axis.text=element_text(family=font_type,size=axis_font_size, color = "Black"),
-                # text=element_text(family=font_type,size=axis_font_size), plot.margin = margin(t = 2, r = 2, b = 2, l = 2, unit = "cm")
-          )
 ```
 
 Organization of the LCLF data:
@@ -466,101 +404,262 @@ DATA EX	LCF000248 0002	LCF000038 0002	NCIA-34649
 
 ```{r Load and organize lclf plasma metadata}
 #### Read metadata ####
-lclf_metadata <- openxlsx::read.xlsx(xlsxFile = file.path("data", "SampleLabIDs.xlsx"),
+#metabolon metabolomics file that contains most of the data in several sheets
+metabolon_file <- file.path("data", "NCIA-0106-20PHML+", "NCIA-0106-20PHML+ (PLASMA) MERGED.xlsx")
+
+lclf_plas_metad <- openxlsx::read.xlsx(xlsxFile = file.path("data", "SampleLabIDs.xlsx"),
                                      sheet = 1)
-print(paste("original lclf_metadata nrow/ncol:", paste(dim(lclf_metadata), collapse = "/")))
+print(paste("original lclf_plas_metad nrow/ncol:", paste(dim(lclf_plas_metad), collapse = "/")))
 
-lclf_samp_link <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NCIA-0106-20PHML+", "NCIA-0106-20PHML+ DATA TABLES (PLASMA)_CURRENT.xlsx"),
-                                     sheet = "Sample Meta Data")
+lclf_samp_link <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                      sheet = "Merged Sample Meta Data")
 print(paste("original lclf_samp_link nrow/ncol:", paste(dim(lclf_samp_link), collapse = "/")))
-lclf_metadata <- na.omit(lclf_metadata)
 
-print(paste("na lclf_metadata nrow/ncol:", paste(dim(lclf_metadata), collapse = "/")))
+lclf_plas_metad <- na.omit(lclf_plas_metad)
 
-lclf_metadata$PARENT_SAMPLE_NAME <- lclf_samp_link$PARENT_SAMPLE_NAME[match(lclf_metadata$CLIENT_SAMPLE_ID, lclf_samp_link$CLIENT_SAMPLE_ID)]
+print(paste("na lclf_plas_metad nrow/ncol:", paste(dim(lclf_plas_metad), collapse = "/")))
 
-lclf_metadata <- na.omit(lclf_metadata, cols = "PARENT_SAMPLE_NAME")
+lclf_plas_metad$PARENT_SAMPLE_NAME <- lclf_samp_link$PARENT_SAMPLE_NAME[match(lclf_plas_metad$CLIENT_SAMPLE_ID, lclf_samp_link$CLIENT_SAMPLE_ID)]
 
-row.names(lclf_metadata) <- lclf_metadata$PARENT_SAMPLE_NAME
+lclf_plas_metad <- na.omit(lclf_plas_metad, cols = "PARENT_SAMPLE_NAME")
 
-lclf_metadata$SUBJECT_ID <- as.factor(lclf_metadata$CLIENT_SAMPLE_ID)
-lclf_metadata$DIET <- as.factor(lclf_metadata$Diet)
-lclf_metadata$DIET_ORDER <- as.factor(lclf_metadata$ARM)
+row.names(lclf_plas_metad) <- lclf_plas_metad$PARENT_SAMPLE_NAME
 
-lclf_metadata <- lclf_metadata[, c("SUBJECT_ID", "DIET", "DIET_ORDER")]
+lclf_plas_metad$SUBJECT_ID <- as.factor(lclf_plas_metad$SubjectID)
+lclf_plas_metad$DIET <- as.factor(lclf_plas_metad$Diet)
+lclf_plas_metad$DIET_ORDER <- as.factor(lclf_plas_metad$ARM)
 
-print(paste("final lclf_metadata nrow/ncol:", paste(dim(lclf_metadata), collapse = "/")))
+lclf_plas_metad <- lclf_plas_metad[, c("SUBJECT_ID", "DIET", "DIET_ORDER")]
+
+print(paste("final lclf_plas_metad nrow/ncol:", paste(dim(lclf_plas_metad), collapse = "/")))
 ```
 
 
 ```{r Load and organize lclf metabolomics}
 #### Read lclf data ####
-lclf_plasma_mtbmcs <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NCIA-0106-20PHML+", "NCIA-0106-20PHML+ DATA TABLES (PLASMA)_CURRENT.xlsx"),
-                                     sheet = "Batch-normalized Data", rowNames = TRUE)
+lclf_plasma_mtbmcs <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                     sheet = "Merged Batch Norm NonImp",
+                                     rowNames = TRUE)
 print(paste("original lclf_plasma_mtbmcs nrow/ncol:", paste(dim(lclf_plasma_mtbmcs), collapse = "/")))
 
-lclf_chem_link <- openxlsx::read.xlsx(xlsxFile = file.path("data", "NCIA-0106-20PHML+", "NCIA-0106-20PHML+ DATA TABLES (PLASMA)_CURRENT.xlsx"),
-                                     sheet = "Chemical Annotation")
+lclf_chem_link <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                      sheet = "Merged Annotation")
 
 names(lclf_plasma_mtbmcs) <- lclf_chem_link$CHEMICAL_NAME[match(names(lclf_plasma_mtbmcs), lclf_chem_link$CHEM_ID)]
 
-# row.names(lclf_plasma_mtbmcs) <-  lclf_samp_link$PARENT_SAMPLE_NAME[match()]
-
-lclf_plasma_mtbmcs <- merge(lclf_metadata, lclf_plasma_mtbmcs, by = 0)
-
-# initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
-
+lclf_plasma_mtbmcs <- merge(lclf_plas_metad, lclf_plasma_mtbmcs, by = 0)
 row.names(lclf_plasma_mtbmcs) <- lclf_plasma_mtbmcs$Row.names
+lclf_plasma_mtbmcs <- lclf_plasma_mtbmcs[,(ncol(lclf_plas_metad)+2):ncol(lclf_plasma_mtbmcs)]
 
 print(paste("final lclf_plasma_mtbmcs nrow/ncol:", paste(dim(lclf_plasma_mtbmcs), collapse = "/")))
 
+my_cols <- filter_metabolites(lclf_plasma_mtbmcs)
+
+lclf_plasma_mtbmcs <- openxlsx::read.xlsx(xlsxFile = metabolon_file, 
+                                          sheet = "Merged Batch Norm Imp",
+                                          rowNames = TRUE)
+names(lclf_plasma_mtbmcs) <- lclf_chem_link$CHEMICAL_NAME[match(names(lclf_plasma_mtbmcs), lclf_chem_link$CHEM_ID)]
+lclf_plasma_mtbmcs <- merge(lclf_plas_metad, lclf_plasma_mtbmcs, by = 0)
+row.names(lclf_plasma_mtbmcs) <- lclf_plasma_mtbmcs$Row.names
+lclf_plasma_mtbmcs <- lclf_plasma_mtbmcs[,my_cols]
 
 ```
 
 
+```{r model and pvals}
+lclf_plasma_pvals <- simple_model(lclf_plasma_mtbmcs, lclf_plas_metad)
 
-```{r}
+lclf_plasma_sup_pv <- pathway_loop(result_pv = lclf_plasma_pvals,
+                             pathway_col = "SUPER_PATHWAY",
+                             chem_col = "CHEMICAL_NAME",
+                             pathway_df = lclf_chem_link,
+                             metabolomic_df = lclf_plasma_mtbmcs)
 
-initial_table <- lclf_plasma_mtbmcs[,5:ncol(lclf_plasma_mtbmcs)]
+# Sub pathways
+lclf_plasma_sub_pv <- pathway_loop(result_pv = lclf_plasma_pvals,
+                             pathway_col = "SUB_PATHWAY",
+                             chem_col = "CHEMICAL_NAME",
+                             pathway_df = lclf_chem_link,
+                             metabolomic_df = lclf_plasma_mtbmcs)
+```
 
 
-#Remove features with more than 80% zeros
-# NOTE: Keep NA as NA
-na_table <- initial_table
-na_table[is.na(na_table)] <- 0
-initial_table <- initial_table[,!sapply(na_table, function(x) mean(x == 0) > 0.8)]
-print(paste("0 rw/col:", paste(dim(initial_table), collapse = "/")))
+```{r Load and organize lclf urine metadata}
+#### Read metadata ####
+#metabolon metabolomics file that contains most of the data in several sheets
+metabolon_file <- file.path("data", "NCIA-0106-20PHML+", "NCIA-0106-20PHML+ (URINE) MERGED.xlsx")
+metadata_file <- file.path("data", "NCIA-0106-20PHML+", "SampleLabIDs20231101.xlsx")
 
-#Exclude metabolites that have a CV>30.0 OR keep metabolites that are < 30
-initial_table <- initial_table[,!sapply(initial_table, 
-                                       function(x) sd(x, na.rm = T) / mean(x, na.rm = T) < 0.3)]
+lclf_urin_metad<- openxlsx::read.xlsx(xlsxFile = metadata_file,
+                                     sheet = 1)
+print(paste("original lclf_urin_metadnrow/ncol:", paste(dim(lclf_urin_metad), collapse = "/")))
 
-print(paste("CV rw/col:", paste(dim(initial_table), collapse = "/")))
+lclf_samp_link <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                      sheet = "Merged Sample Meta Data")
+print(paste("original lclf_samp_link nrow/ncol:", paste(dim(lclf_samp_link), collapse = "/")))
 
-#### Switch to scaled Imp ####
+lclf_urin_metad <- lclf_urin_metad[lclf_urin_metad$Material == "24h Urine",]
 
-my_cols <- names(initial_table)
+lclf_urin_metad<- na.omit(lclf_urin_metad)
 
-# initial_table <- data.frame(data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
-#                                    data.table = FALSE))
-# initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled Imp",]
-# row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
-# 
-# initial_table <- merge(urine_metadata, initial_table, 
-#                      by = 0, 
-#                      all.x = T)
-# initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
-# 
-# row.names(initial_table) <- initial_table$Row.names
-# 
-# initial_table <- initial_table[,my_cols]
-# 
-# #log2 table
-# urine_metabolomics <- log2(initial_table)
+print(paste("na lclf_urin_metadnrow/ncol:", paste(dim(lclf_urin_metad), collapse = "/")))
+
+lclf_urin_metad$PARENT_SAMPLE_NAME <- lclf_samp_link$PARENT_SAMPLE_NAME[match(lclf_urin_metad$CLIENT_SAMPLE_ID, lclf_samp_link$CLIENT_SAMPLE_ID)]
+
+lclf_urin_metad<- na.omit(lclf_urin_metad, cols = "PARENT_SAMPLE_NAME")
+
+row.names(lclf_urin_metad) <- lclf_urin_metad$PARENT_SAMPLE_NAME
+
+lclf_urin_metad$SUBJECT_ID <- as.factor(lclf_urin_metad$SubjectID)
+lclf_urin_metad$DIET <- as.factor(lclf_urin_metad$Diet)
+lclf_urin_metad$DIET_ORDER <- as.factor(lclf_urin_metad$ARM)
+
+lclf_urin_metad<- lclf_urin_metad[, c("SUBJECT_ID", "DIET", "DIET_ORDER")]
+
+print(paste("final lclf_urin_metadnrow/ncol:", paste(dim(lclf_urin_metad), collapse = "/")))
+```
+
+```{r Load and organize lclf urine metabolomics}
+#### Read lclf data ####
+lclf_urin_mtbmcs <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                     sheet = "Merged Batch Norm NonImp",
+                                     rowNames = TRUE)
+print(paste("original lclf_urin_mtbmcs nrow/ncol:", paste(dim(lclf_urin_mtbmcs), collapse = "/")))
+
+lclf_chem_link <- openxlsx::read.xlsx(xlsxFile = metabolon_file,
+                                      sheet = "Merged Annotation")
+
+names(lclf_urin_mtbmcs) <- lclf_chem_link$CHEMICAL_NAME[match(names(lclf_urin_mtbmcs), lclf_chem_link$CHEM_ID)]
+
+lclf_urin_mtbmcs <- merge(lclf_urin_metad, lclf_urin_mtbmcs, by = 0)
+row.names(lclf_urin_mtbmcs) <- lclf_urin_mtbmcs$Row.names
+lclf_urin_mtbmcs <- lclf_urin_mtbmcs[,(ncol(lclf_urin_metad)+2):ncol(lclf_urin_mtbmcs)]
+
+print(paste("final lclf_urin_mtbmcs nrow/ncol:", paste(dim(lclf_urin_mtbmcs), collapse = "/")))
+
+my_cols <- filter_metabolites(lclf_urin_mtbmcs)
+
+lclf_urin_mtbmcs <- openxlsx::read.xlsx(xlsxFile = metabolon_file, 
+                                          sheet = "Merged Batch Norm Imp",
+                                          rowNames = TRUE)
+names(lclf_urin_mtbmcs) <- lclf_chem_link$CHEMICAL_NAME[match(names(lclf_urin_mtbmcs), lclf_chem_link$CHEM_ID)]
+lclf_urin_mtbmcs <- merge(lclf_urin_metad, lclf_urin_mtbmcs, by = 0)
+row.names(lclf_urin_mtbmcs) <- lclf_urin_mtbmcs$Row.names
+lclf_urin_mtbmcs <- lclf_urin_mtbmcs[,my_cols]
 
 ```
 
 
+```{r model and pvals}
+
+lclf_urin_pvals <- simple_model(lclf_urin_mtbmcs, lclf_urin_metad)
+
+lclf_urin_sup_pv <- pathway_loop(result_pv = lclf_urin_pvals,
+                             pathway_col = "SUPER_PATHWAY",
+                             chem_col = "CHEMICAL_NAME",
+                             pathway_df = lclf_chem_link,
+                             metabolomic_df = lclf_urin_mtbmcs)
+
+# Sub pathways
+lclf_urin_sub_pv <- pathway_loop(result_pv = lclf_urin_pvals,
+                             pathway_col = "SUB_PATHWAY",
+                             chem_col = "CHEMICAL_NAME",
+                             pathway_df = lclf_chem_link,
+                             metabolomic_df = lclf_urin_mtbmcs)
+
+
+```
+
+```{r figures}
+library("ggplot2")
+
+my_df <- data.frame("pathways" = c(names(adl_plasma_sup_pv),
+                                   names(adl_urine_sup_pv),
+                                   names(lclf_plasma_sup_pv),
+                                   names(lclf_urin_sup_pv)), 
+                    "pval" = -log10(c(adl_plasma_sup_pv,
+                                      adl_urine_sup_pv,
+                                      lclf_plasma_sup_pv,
+                                      lclf_urin_sup_pv)),
+                    "tissue" = c(rep("ADL plasma", length(adl_plasma_sup_pv)), 
+                                 rep("ADL urine", length(adl_urine_sup_pv)), 
+                                 rep("LCLF plasma", length(lclf_plasma_sup_pv)),
+                                 rep("LCLF urine", length(lclf_urin_sup_pv))))
+
+axis_font_size <- 12
+font_type <- "TT Arial"
+
+ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
+  ggplot2::geom_hline(yintercept = -log10(0.05), color = "red") +
+  geom_point(aes(shape = factor(tissue), color = factor(tissue))) +
+  labs(colour = "Legend") +
+  ggtitle(paste0("ADL Super pathway analysis")) + # Blank Title for the Graph
+  xlab("Super pathways") +
+  ylab(paste("-log(pvalue)")) +
+  theme(line = element_line(colour = "black", linewidth = 1), 
+        # strip.background = element_rect(fill="gray90"),
+        axis.text.x = element_text(angle = 90, hjust=1),
+        axis.line.x = element_line(colour = "black"),
+        axis.line.y = element_line(colour = "black"),
+        # panel.border= element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  labs(color  = "Legend", shape = "Legend")
+```
+
+
+```{r sub figures}
+library("ggplot2")
+
+my_df <- data.frame("pathways" = c(names(adl_plasma_sub_pv), 
+                                   names(adl_urine_sub_pv),
+                                   names(lclf_plasma_sub_pv),
+                                   names(lclf_urin_sub_pv)), 
+                    "pval" = -log10(c(adl_plasma_sub_pv,
+                                      adl_urine_sub_pv,
+                                      lclf_plasma_sub_pv,
+                                      lclf_urin_sub_pv)),
+                    "tissue" = c(rep("ADL plasma", length(adl_plasma_sub_pv)),
+                                 rep("ADL urine", length(adl_urine_sub_pv)), 
+                                 rep("LCLF plasma", length(lclf_plasma_sub_pv)),
+                                 rep("LCLF urine", length(lclf_urin_sub_pv))))
+
+axis_font_size <- 12
+font_type <- "TT Arial"
+
+g <- ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
+  ggplot2::geom_hline(yintercept = -log10(0.05), color = "red") +
+  geom_point(aes(shape = factor(tissue), color = factor(tissue))) +
+  labs(colour = "Legend") +
+  ggtitle(paste0("ADL sub pathway analysis")) + # Blank Title for the Graph
+  xlab("Sub pathways") +
+  ylab(paste("-log(pvalue)")) +
+  theme(line = element_line(colour = "black", linewidth = 1), 
+        # strip.background = element_rect(fill="gray90"),
+        axis.text.x = element_text(angle = 90, hjust=1, size = 6),
+        axis.line.x = element_line(colour = "black"),
+        axis.line.y = element_line(colour = "black"),
+        # panel.border= element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  labs(color  = "Legend", shape = "Legend")
+  # geom_rect(aes(xmin=pval > -log10(0.05), xmax=pval < -log10(0.05), 
+  #           ymin=1,ymax=max),
+  #               color="transparent", fill="orange", alpha=0.3)
+
+ggplot2::ggsave(plot = g, filename = "sub_path.png",   width = 12, height = 4)
+
+g
+
+#Color by dataset
+#Symbol by tissue type
+#group x axis by super pathways - might help with interpretation
+#try to add rectangles
+
+
+```
 
 
 
