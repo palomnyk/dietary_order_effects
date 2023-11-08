@@ -140,10 +140,7 @@ pathway_loop <- function(result_pv,
     # Note: result_pv is the result pvals with the metabolites as the names
   
     # filtering results data set for those in the super pathway of analysis
-    # print(paste(names(result_pv)[1:5], collapse = ", "))
     pathway_metabos <- pathway_df[,chem_col][which(pathway_df[,pathway_col] == pathway_name)]
-    # print(paste(names(result_pv)[1:5], collapse = ", "))
-    # print(length(pathway_metabos))
     # filter pvals to only use those that are found in super pathway
     pval_subset <- result_pv[which(toupper(names(result_pv)) %in% toupper(pathway_metabos))]
     # filter metabolite data
@@ -190,8 +187,6 @@ pathway_loop <- function(result_pv,
       error=function(cond){
               print(paste("an error is thrown on iteration", sup_p, pw_nm))
               message(cond)
-              # Choose a return value in case of error
-              # return(NA)
             }
       # warning=function(cond) {
       #   print(paste("a warning is thrown on iteration", sup_p))
@@ -209,7 +204,6 @@ pathway_loop <- function(result_pv,
   return(sup_pvals)
 }
 
-
 # function for getting super pathways from sub pathway pvals
 find_super_paths <- function(metabo_path_df, sub_paths){
   super_paths <- c()
@@ -218,7 +212,7 @@ find_super_paths <- function(metabo_path_df, sub_paths){
     nm <- names(sub_paths)[i]
     pw_row <- which(metabo_path_df$SUB_PATHWAY == nm)
     sup <- metabo_path_df$SUPER_PATHWAY[pw_row[1]]
-    print(paste(nm, sup))
+    # print(paste(nm, sup))
     super_paths[i] <- sup
   }
   return(super_paths)
@@ -255,9 +249,9 @@ row.names(urine_metadata) <- urine_metadata$CLIENT_IDENTIFIER
 Next read in the urine metabolomics data.
 
 ```{r read and organize urine metabolites}
-
 #Taken from https://app.box.com/folder/132711394563
-initial_table <- data.frame(data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
+metabolon_file <- file.path("data", "NIDDK_urine_adl_rslts.csv")
+initial_table <- data.frame(data.table::fread(file = metabolon_file,
                                    data.table = FALSE))
 print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
 
@@ -272,16 +266,15 @@ row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
 initial_table <- merge(urine_metadata, initial_table, 
                      by = 0, 
                      all.x = T)
-initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
+initial_table <- type.convert(initial_table, as.is = TRUE)# reset column types
 
 row.names(initial_table) <- initial_table$Row.names
 
 initial_table <- initial_table[,25:ncol(initial_table)]
 print(paste("metabolite only rw/col:", paste(dim(initial_table), collapse = "/")))
 
-
 my_cols <- filter_metabolites(initial_table)
-initial_table <- data.frame(data.table::fread(file = file.path("data", "NIDDK_urine_adl_rslts.csv"),
+initial_table <- data.frame(data.table::fread(file = metabolon_file,
                                    data.table = FALSE))
 initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled Imp",]
 row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
@@ -289,7 +282,7 @@ row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
 initial_table <- merge(urine_metadata, initial_table, 
                      by = 0, 
                      all.x = T)
-initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
+initial_table <- type.convert(initial_table, as.is = TRUE)# reset column types
 
 row.names(initial_table) <- initial_table$Row.names
 
@@ -302,8 +295,8 @@ urine_metabolomics <- log2(initial_table)
 
 
 ```{r read and organize plasma metabolomics}
-
-initial_table <- data.frame(data.table::fread(file = file.path("data", "NIDDK_plasma_adl_rslts.csv"),
+metabolon_file <- file.path("data", "NIDDK_plasma_adl_rslts.csv")
+initial_table <- data.frame(data.table::fread(file = metabolon_file,
                                    data.table = FALSE))
 print(paste("initial rw/col:", paste(dim(initial_table), collapse = "/")))
 
@@ -314,11 +307,11 @@ print(paste("scaled rw/col:", paste(dim(initial_table), collapse = "/")))
 #Remove non-metabolomic columns
 row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
 
-#### Remove rows that aren't in metadata
+#Remove rows that aren't in metadata
 initial_table <- merge(plasma_metadata, initial_table, 
                      by = 0, 
                      all.x = T)
-initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
+initial_table <- type.convert(initial_table, as.is = TRUE)# reset column types
 
 row.names(initial_table) <- initial_table$Row.names
 
@@ -328,7 +321,7 @@ print(paste("metabolite only rw/col:", paste(dim(initial_table), collapse = "/")
 #### Filter and switch to scaled Imp ####
 my_cols <- filter_metabolites(initial_table)
 
-initial_table <- data.frame(data.table::fread(file = file.path("data", "NIDDK_plasma_adl_rslts.csv"),
+initial_table <- data.frame(data.table::fread(file = metabolon_file,
                                    data.table = FALSE))
 initial_table <- initial_table[initial_table$RSLT_TYPE == "Scaled Imp",]
 row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
@@ -336,7 +329,7 @@ row.names(initial_table) <- initial_table$CLIENT_IDENTIFIER
 initial_table <- merge(plasma_metadata, initial_table, 
                      by = 0, 
                      all.x = T)
-initial_table <- type.convert(initial_table, as.is = TRUE)#automatically reset incorrectly classified column types
+initial_table <- type.convert(initial_table, as.is = TRUE)# reset column types
 
 row.names(initial_table) <- initial_table$Row.names
 
@@ -658,12 +651,15 @@ my_df <- data.frame("pathways" = c(names(adl_plasma_sub_pv),
                                  rep("LCLF plasma", length(lclf_plasma_sub_pv)),
                                  rep("LCLF urine", length(lclf_urin_sub_pv))))
 
+my_df$pathways[which(my_df$pval > -log10(0.05))] <- toupper(my_df$pathways[which(my_df$pval > -log10(0.05))])
+vert_lines <- my_df$pathways[which(my_df$pval > -log10(0.05))]
+
 my_df$super[my_df$super == "Peptide"] <- "Pep"
 my_df$super[my_df$super == "Carbohydrate"] <- "Carb"
 my_df$super[my_df$super == "Energy"] <- "E"
 # my_df$super[my_df$super == "Nucleotide"] <- "Nuc"
 my_df$super[my_df$super == "Cofactors and Vitamins"] <- "Cof & Vit"
-my_df$super[my_df$super == "Xenobiotics"] <- "Xbio"
+my_df$super[my_df$super == "Xenobiotics"] <- "Xenobio"
 my_df$super[my_df$super == "Partially Characterized Molecules"] <- "M"
 
 axis_font_size <- 12
@@ -678,29 +674,18 @@ g <- ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
   ylab(paste("-log(pvalue)")) +
   facet_grid(. ~ super, space="free_x", scales="free_x", switch="x") +
   theme(line = element_line(colour = "black", linewidth = 1), 
-        # strip.background = element_rect(fill="gray90"),
-        axis.text.x = element_text(angle = 90, hjust=1, size = 6),
+        axis.text.x = element_text(angle = 90, hjust=1, size = 9),
         axis.line.x = element_line(colour = "black"),
         axis.line.y = element_line(colour = "black"),
-        # panel.border= element_blank(),
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
         panel.background = element_blank()) +
-  labs(color  = "tissue", shape = "study")
-  # geom_rect(aes(xmin=pval > -log10(0.05), xmax=pval < -log10(0.05), 
-  #           ymin=1,ymax=max),
-  #               color="transparent", fill="orange", alpha=0.3)
+  labs(color  = "Tissue", shape = "Study") +
+  geom_vline(xintercept = vert_lines, color = "blue", alpha=0.4)
 
 ggplot2::ggsave(plot = g, filename = "sub_path.png",   width = 13, height = 6)
 
 g
-
-#Color by dataset
-#Symbol by tissue type
-#group x axis by super pathways - might help with interpretation
-#try to add rectangles
-
-
 ```
 
 
