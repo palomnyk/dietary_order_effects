@@ -610,17 +610,20 @@ my_df <- data.frame("pathways" = c(names(adl_plasma_sub_pv),
                                  rep("ADL urine", length(adl_urine_sub_pv)), 
                                  rep("LCLF plasma", length(lclf_plasma_sub_pv)),
                                  rep("LCLF urine", length(lclf_urin_sub_pv))))
+sig_pathways <- my_df$pathways[which(my_df$pval > -log10(0.05))]
 
-my_df$pathways[which(my_df$pval > -log10(0.05))] <- toupper(my_df$pathways[which(my_df$pval > -log10(0.05))])
+which(my_df$pathways %in% sig_pathways)
+
+
 vert_lines <- my_df$pathways[which(my_df$pval > -log10(0.05))]
 
 my_df$super[my_df$super == "Peptide"] <- "Pep"
 my_df$super[my_df$super == "Carbohydrate"] <- "Carb"
 my_df$super[my_df$super == "Energy"] <- "E"
 # my_df$super[my_df$super == "Nucleotide"] <- "Nuc"
-my_df$super[my_df$super == "Cofactors and Vitamins"] <- "Cof & Vit"
-my_df$super[my_df$super == "Xenobiotics"] <- "Xenobio"
-my_df$super[my_df$super == "Partially Characterized Molecules"] <- "M"
+my_df$super[my_df$super == "Cofactors and Vitamins"] <- "Cof & Vitamin"
+my_df$super[my_df$super == "Xenobiotics"] <- "Xenobiotic"
+my_df$super[my_df$super == "Partially Characterized Molecules"] <- "P"
 
 axis_font_size <- 12
 font_type <- "TT Arial"
@@ -640,8 +643,8 @@ g <- ggplot(my_df, aes(x = pathways, y = pval, color = factor(tissue))) +
         panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
         panel.background = element_blank()) +
-  labs(color  = "Tissue", shape = "Study") +
-  geom_vline(xintercept = vert_lines, color = "blue", alpha=0.4)
+  labs(color  = "Tissue", shape = "Study")
+  # geom_vline(xintercept = vert_lines, color = "blue", alpha=0.2)
 
 ggplot2::ggsave(plot = g, filename = "sub_path.png",   width = 13, height = 6)
 
